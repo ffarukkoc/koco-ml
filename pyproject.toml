@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "koco-ml"
+dynamic = ["version"]
+description = "Toolkit for building regression and binary classification models: analysis, preprocessing, feature selection and modelling."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Faruk Koç", email = "ffarukkoc@yahoo.com" }]
+keywords = ["machine-learning", "regression", "classification", "preprocessing", "feature-selection", "scikit-learn", "pandas"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "openpyxl>=3.1",
+    "scikit-learn>=1.6",
+    "scipy>=1.10",
+    "joblib>=1.3",
+]
+
+# Optional dependencies are imported only by the features that need them.
+[project.optional-dependencies]
+sql = ["SQLAlchemy>=2.0", "pyodbc"]                      # Connection
+parquet = ["pyarrow"]                                    # ExportParquet, ImportParquet
+stats = ["statsmodels"]                                  # VIFReport, BackwardSelection
+boosting = ["xgboost", "lightgbm", "catboost"]           # XGB*, LGBM*, CatBoost* keys
+dev = ["pytest"]
+all = ["koco-ml[sql,parquet,stats,boosting]"]
+
+[project.urls]
+Homepage = "https://github.com/ffarukkoc/koco-ml"
+Documentation = "https://github.com/ffarukkoc/koco-ml/blob/main/GUIDE.md"
+Issues = "https://github.com/ffarukkoc/koco-ml/issues"
+
+[tool.setuptools]
+packages = ["koco"]
+
+# The version lives only in koco/__init__.py.
+[tool.setuptools.dynamic]
+version = {attr = "koco.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
