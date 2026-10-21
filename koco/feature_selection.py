@@ -116,7 +116,7 @@ def VIFReport(
        Tuple of (Report, HighVIFFeatures); HighVIFFeatures lists features with VIF above Threshold.
 
     Raises:
-       ImportError: If statsmodels is not installed (pip install "koco[stats]").
+       ImportError: If statsmodels is not installed (pip install "koco-ml[stats]").
        ValueError: If AutoClean is False and problem columns are found.
     """
     from statsmodels.stats.outliers_influence import variance_inflation_factor
@@ -446,7 +446,7 @@ def BackwardSelection(
             features left after the removal).
 
     Raises:
-       ImportError: If statsmodels is not installed (pip install "koco[stats]").
+       ImportError: If statsmodels is not installed (pip install "koco-ml[stats]").
        ValueError: If ModelType or MaxPValue is invalid, columns are missing, not numeric, contain
           nulls or inf values, a Binary Target is not 0/1, or the model cannot be fitted
           (perfect separation, a Logit fit that does not converge, or collinear features); use
