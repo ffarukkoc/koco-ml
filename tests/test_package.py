@@ -1,7 +1,7 @@
 import koco
 
 def test_version_and_public_names_are_unique():
-    assert koco.__version__ == "0.1.0"
+    assert koco.__version__ == "0.1.1"
     assert len(koco.__all__) == len(set(koco.__all__))
     for Name in koco.__all__:
         assert callable(getattr(koco, Name)), Name

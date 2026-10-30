@@ -210,6 +210,7 @@ koco/                        <- project root
     ├── registry.py          <- algorithm registry (ModelSpec, MODEL_SPECS)
     ├── metrics.py           <- regression and classification metrics
     ├── modelling.py         <- input checks, train/test split, model training
+    ├── model_selection.py   <- model choice, bootstrap comparison, holdout check
     ├── scoring.py           <- predictions and model bundle scoring
     └── guides.py            <- explanatory guides for strategies, methods, algorithms and metrics
 ```

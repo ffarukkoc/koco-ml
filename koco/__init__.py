@@ -1,16 +1,17 @@
 """koco - toolkit for building regression and binary classification models."""
 
-from . import analysis, feature_selection, general, guides, metrics, modelling, preprocessing, registry, scoring
+from . import analysis, feature_selection, general, guides, metrics, model_selection, modelling, preprocessing, registry, scoring
 from .analysis import *
 from .feature_selection import *
 from .general import *
 from .guides import *
 from .metrics import *
+from .model_selection import *
 from .modelling import *
 from .preprocessing import *
 from .scoring import *
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Each module lists its public names in its own __all__; adding a function only needs that one line.
 __all__ = []
@@ -20,6 +21,7 @@ __all__ += preprocessing.__all__
 __all__ += feature_selection.__all__
 __all__ += metrics.__all__
 __all__ += modelling.__all__
+__all__ += model_selection.__all__
 __all__ += scoring.__all__
 __all__ += guides.__all__
 

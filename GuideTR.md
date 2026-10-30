@@ -7,6 +7,7 @@ koco ile ham bir tablodan skorlanmış (score) bir regresyon (regression) veya i
 - [Küçük örnekler](#küçük-örnekler)
 - [Uçtan uca örnek (end-to-end example)](#uçtan-uca-örnek-end-to-end-example)
 - [Fonksiyonların (function) döndürdükleri](#fonksiyonların-function-döndürdükleri)
+- [En iyi modeli seçme](#en-iyi-modeli-seçme)
 - [Aykırı değer (outlier) planı oluşturma](#aykırı-değer-outlier-planı-oluşturma)
 - [Fonksiyon referansı (function reference)](#fonksiyon-referansı-function-reference)
 - [Algoritma anahtarları (algorithm key)](#algoritma-anahtarları-algorithm-key)
@@ -25,7 +26,8 @@ flowchart LR
   S --> P["3. Ön işleme (preprocessing)<br/>Train üzerinde fit, Train + Test'e uygula"]
   P --> F["4. Değişken Seçimi (feature selection)<br/>Train üzerinde"]
   F --> M["5. Modelleme (modelling)<br/>Train üzerinde fit, Test üzerinde değerlendir"]
-  M --> D["6. Skorlama (scoring)<br/>ImportModelBundle + ApplyModelBundle"]
+  M --> C["5b. Model Seçimi (model selection)<br/>seç, karşılaştır, holdout üzerinde doğrula"]
+  C --> D["6. Skorlama (scoring)<br/>ImportModelBundle + ApplyModelBundle"]
 ```
 
 | Adım | Amaç | Fonksiyonlar (function) |
@@ -35,6 +37,7 @@ flowchart LR
 | 3. Ön işleme (preprocessing) | Null → Aykırı değer (outlier) → WOE → Ölçekleme (scaling) sırasını izleyin, gerekmeyen adımları atlayın. WOE yalnızca ikili modeller (binary model) içindir. Planları Train üzerinde fit edin veya seçin, ardından Train, Test ve canlı ortam (production) verisine değiştirmeden uygulayın. | `ProfileNullColumns`, `FitNullPlan`, `ApplyNullPlan`, `ApplyOutlierPlan`, `FitWOEPlan`, `ApplyWOEPlan`, `FitScalingPlan`, `ApplyScalingPlan`, `ExportJson`, `ImportJson` |
 | 4. Değişken Seçimi (feature selection) | Gereksiz ve bilgi taşımayan değişkenleri (feature) çıkarmak. | `Correlation`, `VIFReport`, `SelectModelFeatures`, `BackwardSelection` |
 | 5. Modelleme (modelling) | Birkaç algoritma eğitmek, karşılaştırmak, Test üzerinde değerlendirmek. | `ModelRegistryGuide`, `CheckModellingInputs`, `RegressionModelling`, `ClassificationModelling`, `ApplyModel`, `CalculateModelPredictions`, `RegressionMetrics`, `ClassificationMetrics`, `MetricGuide`, `ExportModelArtifacts`, `ExportModelBundle` |
+| 5b. Model Seçimi (model selection) | Performance tablosundan bir model seçmek, birbirine yakın adayların gerçekten farklı olup olmadığını kontrol etmek ve seçimi bir holdout örneklemi (sample) üzerinde doğrulamak. Bkz. [En iyi modeli seçme](#en-iyi-modeli-seçme). | `SelectBestModel`, `BootstrapCompare`, `EvaluateOnHoldout` |
 | 6. Skorlama (scoring) | Kaydedilmiş planları ve seçilen modeli yeni veriye uygulamak. | `ImportModelBundle`, `ApplyModelBundle` (veya tek tek `ImportJson`, `ApplyNullPlan`, `ApplyOutlierPlan`, `ApplyWOEPlan`, `ApplyScalingPlan`, `ApplyModel`, `CalculateModelPredictions`) |
 
 Temel kurallar:
@@ -336,6 +339,139 @@ dosyayı güvenli hâle getirmez: yalnızca güvenilir kaynaklardan gelen joblib
 
 Tahmin (prediction) çıktıları girdi indeksini (index) korur. Bir null planı `DropRows` kullanıyorsa, `ApplyModelBundle`
 yalnızca ön işleme (preprocessing) sonrasında kalan satırları döndürür.
+
+## En iyi modeli seçme
+
+`RegressionModelling` ve `ClassificationModelling`, algoritma ve örneklem (sample) başına bir `Performance` satırı döndürür.
+En iyi görünen satırı gözle seçmek kolayca yanlış sonuç verir: en iyi Test değeri, aşırı öğrenmiş (overfit) bir modelden,
+örnekleme gürültüsünden (sampling noise) ya da basit bir baz modeli (baseline) güçlükle geçen bir modelden gelebilir.
+Üç fonksiyon (function) seçimi açık ve açıklanabilir hale getirir. Yalnızca tabloları ve tahminleri (prediction) okurlar;
+hiçbir şey eğitilmez veya değiştirilmez.
+
+| Fonksiyon (function) | Neden var | Ne zaman kullanılır | Girdi |
+|---|---|---|---|
+| `SelectBestModel` | `Performance` tablosunu, her modelin neden elendiğini veya sıralandığını gösteren sıralı bir listeye çevirir. | Modellemeden (modelling) sonra, seçim örnekleminde (selection sample) (genelde Test) bir kez. | `Performance` |
+| `BootstrapCompare` | Sıralama, birinci ve ikinci modelin yalnızca örnekleme gürültüsü kadar farklı olduğunu gizleyebilir. Bunu aynı satırlar üzerinde ölçer. | `SelectBestModel` sonrasında, ilk adaylar birbirine yakınsa. | Adayların seçim örnekleminde tahminleri (prediction) |
+| `EvaluateOnHoldout` | Seçimi hiç etkilememiş bir örneklemde (örn. OOT) son kontrol. | Önerilen model için, en sonda, bir kez. | Holdout satırları eklenmiş `Performance` |
+
+Sırayı koruyun: Train ve Test ile seçin, modeller yakınsa bootstrap ile doğrulayın, holdout'a en son bakın. Holdout sizi başka
+bir model seçmeye yönlendirirse artık bağımsız değildir.
+
+```python
+# Varsayılan ayırma (split) ile modelleme; Performance Train ve Test satırlarını içerir
+Artifacts, Performance, Log, TrainData = koco.RegressionModelling(
+    Table, ["DummyR", "RidgeR", "RandFR"], Target, Label="Run1",
+)
+Test = Table.drop(index=TrainData.index)
+
+# 1. Seç: DummyR, diğer her modelin geçmesi gereken baz modeldir (baseline)
+Ranking = koco.SelectBestModel(Performance)
+Best = Ranking.loc[Ranking["Recommended"]].iloc[0]
+
+# 2. İlk adayları aynı Test satırlarında karşılaştır
+Predictions = koco.CalculateModelPredictions(Test, [Target], Artifacts)
+Compare = koco.BootstrapCompare(
+    Predictions, Target,
+    {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}, "Regression",
+)
+
+# 3. Bir holdout (örn. OOT) üzerinde bir kez doğrula: metriklerini SampleName "OOT" olarak Performance'a ekle
+Scores = koco.ApplyModel(OOT, Artifacts[Best["AlgorithmName"]])
+OOTRow = pd.DataFrame([{
+    "Label": Best["Label"], "AlgorithmName": Best["AlgorithmName"], "SampleName": "OOT",
+    **koco.RegressionMetrics(OOT[Target], Scores),
+}])
+Final = koco.EvaluateOnHoldout(pd.concat([Performance, OOTRow], ignore_index=True), Best["Label"], Best["AlgorithmName"])
+```
+
+İkili (binary) modellerde `ClassificationModelling`, baz model olarak `DummyC` ve `ClassificationMetrics` kullanın.
+`Split=False` ile modellediyseniz Test örneklemini kendiniz değerlendirin ve satırlarını aynı şekilde `SampleName` `"Test"`
+olarak ekleyin.
+
+### SelectBestModel: nasıl karar verir
+
+Bir model, bir `Label` ve `AlgorithmName` çiftidir. Yalnızca Train ve seçim örnekleminin (selection sample) satırları okunur;
+bu yüzden OOT gibi ek örneklemler seçimi asla etkilemez. Her model şu adımlardan geçer:
+
+| Adım | Kural (varsayılan) | Sonuç |
+|---|---|---|
+| Data | Örneklem başına tam bir satır ve sonlu (finite) metrikler. | Fail: elenir. Yinelenen satırlar ve eksik metrikler raporlanır. |
+| Baseline | Aynı Label'ın baz modelini seçim örnekleminde geçmek. Regresyon (regression): WMAPE `MinImprovementOverBaseline` (%10) kadar düşük ve R2 yüksek. İkili (binary): LogLoss %10 düşük ve Gini yüksek. | Fail: elenir. NA: Label'ın baz modeli yok. |
+| Bias (Regresyon) | Mutlak Bias bölü ortalama mutlak hedef en fazla `MaxRelativeBias` (0.05). | Fail: elenir. NA: hesaplanamıyor (WMAPE 0); model uygun (eligible) kalır. |
+| Memorize | Train uyumu neredeyse mükemmel değil: R2 0.999'un (Regresyon) veya AUC 0.99'un (İkili) altında; `MemorizationLimit` ile değiştirilir. | Fail: aday değildir. |
+| Overfit | Train eksi seçim örneklemi farkı (R2 (Regresyon) veya Gini (İkili)) en fazla `MaxFitGap` (0.15). | Fail: aday değildir. |
+
+**Seçim.** Adaylar, elenmemiş ve hem Memorize hem Overfit adımını geçen modellerdir. Hiç yoksa, Overfit'i geçen modeller
+uyarı (alert) ile sıralanır (Train uyumu neredeyse mükemmel ama Train-Test farkı küçükse genellikle problem kolaydır;
+verinizde bu doğruysa `MemorizationLimit` değerini yükseltin). Yine yoksa Memorize'ı geçen modeller uyarı ile sıralanır;
+onlar da yoksa hiçbir model önerilmez.
+
+**Sıralama.** Adaylar, seçim örnekleminin metriklerinin ortalama sırasına göre sıralanır (Regresyon: WMAPE, RMSE, MAE, R2;
+İkili: Gini, KS, LogLoss, Brier). Ana metriği (WMAPE veya Gini) en iyinin `TieTolerance` (%1) içinde olan adaylar eşitlik
+bandını (tie band) oluşturur: 1. sırayı paylaşırlar ve Train-seçim farkı en küçük olan `Recommended` olur. Örneğin en iyi
+WMAPE 0.2000 ise 0.2020'ye kadar her aday eşittir.
+
+**Sonucu okuma.** Tablo önce sıralı modelleri, sonra elenen modelleri, en sonda baz modelleri listeler.
+
+| Sütun | Anlamı |
+|---|---|
+| `Data`, `Baseline`, `Bias`, `Memorize`, `Overfit` | Her adım için `Pass`, `Fail` veya `NA` (değerlendirilmedi). |
+| `FitGap` | Train eksi seçim örneklemi (R2 veya Gini). Büyük değerler aşırı öğrenmeyi (overfitting) gösterir. |
+| `RelativeBias` | Yalnızca Regresyon: mutlak Bias bölü ortalama mutlak hedef. |
+| `AvgRank`, `TieBand` | Ortalama metrik sırası; model eşitlik bandındaysa `Yes`. |
+| `Result` | Sıra numarası, `Eliminated` veya `Baseline`. Eşit modeller 1. sırayı paylaşır. |
+| `Recommended` | Tam bir model için `True`; hiçbiri ayakta kalmadıysa hiçbiri için. |
+
+Hiçbir model önerilmediyse yazdırılan uyarılara ve adım sütunlarına bakın: her modeli hangi kuralın elediğini gösterirler.
+Sonra modeli elle seçmek yerine ilgili eşiği bilinçli olarak gevşetin.
+
+### BootstrapCompare: ilk modeller gerçekten farklı mı?
+
+Test örneklemi rastgele bir çekilimdir; iki model arasındaki küçük bir fark şans olabilir. Eşleştirilmiş bootstrap (paired
+bootstrap), satırları yerine koyarak (with replacement) çok kez yeniden örnekler ve tüm modelleri aynı yeniden örneklenmiş
+satırlarda skorlar. Metrik farkının `Reference`'a göre yayılımı, farkın ne kadarının gürültü olduğunu gösterir. `TieTolerance`'a
+veriye dayalı bir alternatiftir.
+
+- **Girdi:** her örneklem satırı için bir satır; hedef ve aday başına bir tahmin sütunu (Regresyon: tahmin edilen değer;
+  İkili: 1. sınıfın olasılığı). `CalculateModelPredictions` bu sütunları üretir: regresyonda `RidgeR`, ikilide
+  `LogisticCProbability`. Sütun adları farklı olmalıdır; aynı algoritma birden fazla Label'da geçiyorsa `Rename`
+  argümanını kullanın veya tabloyu Label başına oluşturun. `Candidates`, raporlama için her sütunu `(Label, AlgorithmName)`
+  ile eşler.
+- **Yalnızca seçim örnekleminde kullanın;** `SelectBestModel`'in en iyi sıraladığı modellerle.
+- **Reference:** `None`, tüm satırlarda en iyi adayı kullanır.
+
+| Sütun | Anlamı |
+|---|---|
+| metrik (`WMAPE`, `Gini`, ...) | Tüm satırlardaki metrik. |
+| `Delta` | Yeniden örneklemeler boyunca Reference'a göre ortalama iyileşme; pozitif daha iyidir. |
+| `CILow`, `CIHigh` | İyileşmenin aralığı (`ConfidenceLevel`, varsayılan %90). |
+| `ProbBetter` | Adayın Reference'ı geçtiği yeniden örnekleme oranı. |
+| `Verdict` | `Reference`; aralık 0'ı içeriyorsa `Tied`; aksi halde `Better` veya `Worse`. |
+
+`Tied` bir aday, bu satırlarda Reference'tan ayırt edilemez. Daha basit, hızlı veya kararlı olanı tercih edin ve sıralama
+düzenini gerçek bir fark olarak okumayın.
+
+Sınırlar: bootstrap bu satırların örnekleme gürültüsünü yakalar, yeniden eğitimden (retraining) gelecek değişkenliği değil;
+satırların bağımsız olduğunu varsayar (gruplu veya zamanla ilişkili satırlar için olduğu gibi uygun değildir); aralıklar
+çok sayıda adayın karşılaştırılması için düzeltilmez ve Reference aynı satırlarda seçilir. Çalışma süresi satır x aday x
+yeniden örnekleme sayısıyla artar; bir ilerleme mesajı yazdırılır ve büyük işler her çeyrekte rapor verir.
+
+### EvaluateOnHoldout: son kontrol
+
+Bir holdout örneklemi (örn. OOT) tüm seçimin dışında tutulmuştur. Önerilen model için `EvaluateOnHoldout`'ı bir kez
+çalıştırın. Seçim örneklemini ve holdout örneklemini, ikisini de `Performance` tablosundan alarak karşılaştırır ve tek bir
+satır döndürür:
+
+| Değer | Anlamı |
+|---|---|
+| `Decay` | Ana metriğin (WMAPE artışı veya Gini düşüşü) seçim örnekleminden holdout'a göreli kötüleşmesi. Negatif, modelin iyileştiği anlamına gelir. Sınır: `MaxDecay` (0.30). |
+| `RelativeBias` | Yalnızca Regresyon: holdout'ta mutlak Bias bölü ortalama mutlak hedef. Sınır: `MaxRelativeBias` (0.05). |
+| `Pass` | Hesaplanabilen her kontrol sınırı içindeyse `True`. |
+
+Paydası sıfır olan bir kontrol `NaN` olur ve uyarı ile atlanır. Metrikler eksikse veya hiçbir kontrol hesaplanamadıysa `Pass`
+`False` olur. Fonksiyon, holdout'ta modeli bir baz modelle karşılaştırmaz; gerekirse baz modelin holdout satırını
+`Performance`'a ekleyip kendiniz karşılaştırın. `Pass` `False` ise başka bir modele geçmek yerine nedeni araştırın
+(drift, veri sorunları).
 
 ## Aykırı değer (outlier) planı oluşturma
 
@@ -1462,6 +1598,117 @@ ClassificationModelling(
 - `Log`: Label, AlgorithmName, SampleName, Stage, Severity, Message, SystemDate sütunlarıyla hatalar, uyarılar ve bilgi mesajları.
 
 - `TrainData`: Modellerin fit edildiği satırların birebir kopyası (orijinal indeks (index), Features + Target); böylece çalıştırma, gelen satır sırasından bağımsız olarak yeniden üretilebilir.
+
+</details>
+
+### model_selection
+
+Hangi fonksiyonun ne zaman kullanılacağı ve sonuçların nasıl okunacağı için bkz. [En iyi modeli seçme](#en-iyi-modeli-seçme).
+
+| Fonksiyon (function) | Amaç | Örnek |
+|---|---|---|
+| `SelectBestModel` | Performance tablosundan en iyi modeli seçer ve her modelin nasıl elendiğini veya sıralandığını gösterir. | `Ranking = koco.SelectBestModel(Performance)` |
+| `BootstrapCompare` | Aday modellerin aynı satırlarda gerçekten farklı olup olmadığını eşleştirilmiş bootstrap (paired bootstrap) ile test eder. | `koco.BootstrapCompare(Predictions, Target, {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}, "Regression")` |
+| `EvaluateOnHoldout` | Seçim bittikten sonra seçilen tek bir modeli bir holdout örneklemi (sample) (örn. OOT) üzerinde kontrol eder. | `koco.EvaluateOnHoldout(Performance, "Run1", "RidgeR")` |
+
+<details>
+<summary>SelectBestModel: parametreler (parameter) ve dönüş değeri (return value)</summary>
+
+```text
+SelectBestModel(
+    Performance: pd.DataFrame,
+    SelectionSample: str = "Test",
+    TrainSample: str = "Train",
+    BaselineAlgorithm: str | None = None,
+    MinImprovementOverBaseline: float = 0.10,
+    MaxRelativeBias: float = 0.05,
+    MaxFitGap: float = 0.15,
+    MemorizationLimit: float | None = None,
+    TieTolerance: float = 0.01,
+) -> pd.DataFrame
+```
+
+**Parametreler (parameter)**
+
+- `Performance`: RegressionModelling / ClassificationModelling tablosu; opsiyonel (optional) olarak ek örneklem satırları içerebilir; değiştirilmez.
+- `SelectionSample`: Seçim için kullanılan örneklem. TrainSample'dan farklı olmalıdır.
+- `TrainSample`: Modellerin fit edildiği örneklem.
+- `BaselineAlgorithm`: Baz modelin (baseline) registry anahtarı. None, DummyR (Regresyon) veya DummyC (İkili) kullanır.
+- `MinImprovementOverBaseline`: Baz modele göre gereken göreli kazanç, [0, 1) aralığında.
+- `MaxRelativeBias`: İzin verilen en büyük |Bias| / ortalama |y| (yalnızca Regresyon).
+- `MaxFitGap`: R2 (Regresyon) veya Gini (İkili) için izin verilen en büyük Train - SelectionSample farkı.
+- `MemorizationLimit`: Bir modelin ezberlediği (memorising) kabul edildiği Train R2 (Regresyon) veya AUC (İkili) değeri. None, 0.999 (Regresyon) veya 0.99 (İkili) kullanır.
+- `TieTolerance`: Modellerin eşit sayıldığı, en iyi ana metriğe (WMAPE veya Gini) göreli uzaklık.
+
+**Dönüş değeri (return value)**
+
+Önce sıralı modeller, sonra elenen modeller, en sonda baz modeller olacak şekilde DataFrame. Sütunlar: Label, AlgorithmName, adım başına bir sütun (Data, Baseline, Bias (Regresyon), Memorize, Overfit: "Pass", "Fail" veya "NA"), FitGap, RelativeBias (yalnızca Regresyon), iki örneklemdeki ana metrik, AvgRank, TieBand, Result ("Eliminated", "Baseline" veya sıra) ve Recommended (tek bir model için True).
+
+</details>
+
+<details>
+<summary>BootstrapCompare: parametreler (parameter) ve dönüş değeri (return value)</summary>
+
+```text
+BootstrapCompare(
+    Predictions: pd.DataFrame,
+    Target: str,
+    Candidates: dict[str, tuple[str, str]],
+    ModelType: str,
+    Metric: str | None = None,
+    Reference: str | None = None,
+    Resamples: int = 1000,
+    ConfidenceLevel: float = 0.90,
+    RandomState: int = 1234,
+) -> pd.DataFrame
+```
+
+**Parametreler (parameter)**
+
+- `Predictions`: Her örneklem satırı için bir satır; Target sütunu ve aday başına bir tahmin sütunu (Regresyon: tahmin edilen değer; İkili: 1. sınıfın olasılığı); değiştirilmez.
+- `Target`: Predictions içindeki Target sütununun adı.
+- `Candidates`: Aday sütun adı -> (Label, AlgorithmName); en az iki girdi, örn. {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}.
+- `ModelType`: "Regression" veya "Binary".
+- `Metric`: Regresyon: WMAPE (varsayılan), RMSE, MAE. İkili: Gini (varsayılan), AUC, LogLoss.
+- `Reference`: Karşılaştırılacak aday anahtarı; None tüm satırlarda en iyi adayı kullanır.
+- `Resamples`: Bootstrap örneklem sayısı, en az 100.
+- `ConfidenceLevel`: Aralığın genişliği, 0 ile 1 arasında (sınırlar hariç).
+- `RandomState`: Yeniden örneklemenin tohumu (seed).
+
+**Dönüş değeri (return value)**
+
+En iyi metrik başta olacak şekilde DataFrame: Candidate, Label, AlgorithmName, tüm satırlardaki metrik, Delta (Reference'a göre ortalama iyileşme; pozitif daha iyidir), CILow, CIHigh, ProbBetter (adayın Reference'ı geçtiği yeniden örnekleme oranı) ve Verdict ("Reference", "Tied", "Better" veya "Worse").
+
+</details>
+
+<details>
+<summary>EvaluateOnHoldout: parametreler (parameter) ve dönüş değeri (return value)</summary>
+
+```text
+EvaluateOnHoldout(
+    Performance: pd.DataFrame,
+    Label: str,
+    AlgorithmName: str,
+    SelectionSample: str = "Test",
+    HoldoutSample: str = "OOT",
+    MaxDecay: float = 0.30,
+    MaxRelativeBias: float = 0.05,
+) -> pd.Series
+```
+
+**Parametreler (parameter)**
+
+- `Performance`: SelectionSample ve HoldoutSample satırlarını içeren tablo; değiştirilmez.
+- `Label`: Modelin Label'ı.
+- `AlgorithmName`: Modelin algoritma anahtarı.
+- `SelectionSample`: Modelin seçildiği örneklem.
+- `HoldoutSample`: Seçimin dışında tutulan örneklem.
+- `MaxDecay`: Ana metriğin (WMAPE artışı veya Gini düşüşü) SelectionSample'dan HoldoutSample'a izin verilen en büyük göreli kötüleşmesi.
+- `MaxRelativeBias`: HoldoutSample'da izin verilen en büyük |Bias| / ortalama |y| (yalnızca Regresyon).
+
+**Dönüş değeri (return value)**
+
+Label, AlgorithmName, iki örneklemdeki ana metrik, Decay, RelativeBias (yalnızca Regresyon) ve Pass içeren Series. Paydası sıfır olan bir kontrol NaN olur ve uyarı ile atlanır; metrikler eksikse veya hiçbir kontrol hesaplanamadıysa Pass False olur.
 
 </details>
 

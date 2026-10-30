@@ -206,6 +206,7 @@ koco/                        <- proje kökü
     ├── registry.py          <- algoritma kaydı (algorithm registry) (ModelSpec, MODEL_SPECS)
     ├── metrics.py           <- regresyon (regression) ve sınıflandırma (classification) metrikleri (metric)
     ├── modelling.py         <- girdi kontrolleri, train/test ayrımı (split), model eğitimi
+    ├── model_selection.py   <- model seçimi, bootstrap karşılaştırması, holdout kontrolü
     ├── scoring.py           <- tahminler (prediction) ve model paketi (model bundle) skorlama (scoring)
     └── guides.py            <- stratejiler (strategy), yöntemler (method), algoritmalar ve metrikler (metric) için açıklayıcı rehberler
 ```

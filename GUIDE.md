@@ -7,6 +7,7 @@ How to go from a raw table to a scored regression or binary classification model
 - [Small examples](#small-examples)
 - [End-to-end example](#end-to-end-example)
 - [What the functions return](#what-the-functions-return)
+- [Choosing the best model](#choosing-the-best-model)
 - [Creating an outlier plan](#creating-an-outlier-plan)
 - [Function reference](#function-reference)
 - [Algorithm keys](#algorithm-keys)
@@ -25,7 +26,8 @@ flowchart LR
   S --> P[3. Preprocessing<br/>fit on Train, apply to Train + Test]
   P --> F[4. Feature Selection<br/>on Train]
   F --> M[5. Modelling<br/>fit on Train, evaluate on Test]
-  M --> D[6. Scoring<br/>ImportModelBundle + ApplyModelBundle]
+  M --> C[5b. Model Selection<br/>choose, compare, confirm on holdout]
+  C --> D[6. Scoring<br/>ImportModelBundle + ApplyModelBundle]
 ```
 
 | Step | Goal | Functions |
@@ -35,6 +37,7 @@ flowchart LR
 | 3. Preprocessing | Follow Null → Outlier → WOE → Scaling, skipping steps that are not needed. WOE is for binary models only. Fit or choose the plans on Train, then apply them unchanged to Train, Test and production. | `ProfileNullColumns`, `FitNullPlan`, `ApplyNullPlan`, `ApplyOutlierPlan`, `FitWOEPlan`, `ApplyWOEPlan`, `FitScalingPlan`, `ApplyScalingPlan`, `ExportJson`, `ImportJson` |
 | 4. Feature Selection | Remove redundant and uninformative features. | `Correlation`, `VIFReport`, `SelectModelFeatures`, `BackwardSelection` |
 | 5. Modelling | Train several algorithms, compare them, evaluate on Test. | `ModelRegistryGuide`, `CheckModellingInputs`, `RegressionModelling`, `ClassificationModelling`, `ApplyModel`, `CalculateModelPredictions`, `RegressionMetrics`, `ClassificationMetrics`, `MetricGuide`, `ExportModelArtifacts`, `ExportModelBundle` |
+| 5b. Model Selection | Choose one model from the Performance table, check that close candidates really differ, and confirm the choice on a holdout sample. See [Choosing the best model](#choosing-the-best-model). | `SelectBestModel`, `BootstrapCompare`, `EvaluateOnHoldout` |
 | 6. Scoring | Apply the saved plans and the chosen model to new data. | `ImportModelBundle`, `ApplyModelBundle` (or `ImportJson`, `ApplyNullPlan`, `ApplyOutlierPlan`, `ApplyWOEPlan`, `ApplyScalingPlan`, `ApplyModel`, `CalculateModelPredictions` one by one) |
 
 Rules of thumb:
@@ -336,6 +339,142 @@ an untrusted file safe: only load joblib files and bundles from trusted sources.
 
 Prediction outputs retain the input index. If a null plan uses `DropRows`, `ApplyModelBundle`
 returns only the rows that remain after preprocessing.
+
+## Choosing the best model
+
+`RegressionModelling` and `ClassificationModelling` return one `Performance` row per algorithm and
+sample. Picking the best-looking row by eye is easy to get wrong: the best Test number can come from
+an overfit model, from sampling noise, or from a model that barely beats a trivial baseline. Three
+functions make the choice explicit and explainable. They only read tables and predictions; nothing is
+trained or modified.
+
+| Function | Why it exists | When to use it | Input |
+|---|---|---|---|
+| `SelectBestModel` | Turns the `Performance` table into a ranked list that shows why every model was eliminated or ranked. | After modelling, once, on the selection sample (normally Test). | `Performance` |
+| `BootstrapCompare` | The ranking can hide that the first and second model differ only by sampling noise. It measures this on the same rows. | After `SelectBestModel`, when the top candidates are close. | Predictions of the candidates on the selection sample |
+| `EvaluateOnHoldout` | Final check on a sample that never influenced the choice (e.g. OOT). | Once, for the recommended model, at the very end. | `Performance` with the holdout rows added |
+
+Keep this order: choose on Train and Test, confirm with the bootstrap if models are close, and look
+at the holdout last. If the holdout makes you pick a different model, it is no longer independent.
+
+```python
+# Modelling with the default split, so Performance holds Train and Test rows
+Artifacts, Performance, Log, TrainData = koco.RegressionModelling(
+    Table, ["DummyR", "RidgeR", "RandFR"], Target, Label="Run1",
+)
+Test = Table.drop(index=TrainData.index)
+
+# 1. Choose: DummyR is the baseline every other model must beat
+Ranking = koco.SelectBestModel(Performance)
+Best = Ranking.loc[Ranking["Recommended"]].iloc[0]
+
+# 2. Compare the top candidates on the same Test rows
+Predictions = koco.CalculateModelPredictions(Test, [Target], Artifacts)
+Compare = koco.BootstrapCompare(
+    Predictions, Target,
+    {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}, "Regression",
+)
+
+# 3. Confirm once on a holdout (e.g. OOT): add its metrics to Performance as SampleName "OOT"
+Scores = koco.ApplyModel(OOT, Artifacts[Best["AlgorithmName"]])
+OOTRow = pd.DataFrame([{
+    "Label": Best["Label"], "AlgorithmName": Best["AlgorithmName"], "SampleName": "OOT",
+    **koco.RegressionMetrics(OOT[Target], Scores),
+}])
+Final = koco.EvaluateOnHoldout(pd.concat([Performance, OOTRow], ignore_index=True), Best["Label"], Best["AlgorithmName"])
+```
+
+For binary models use `ClassificationModelling`, `DummyC` as the baseline and `ClassificationMetrics`.
+If you modelled with `Split=False`, evaluate the Test sample yourself and append its rows with
+`SampleName` `"Test"` in the same way.
+
+### SelectBestModel: how it decides
+
+A model is one `Label` and `AlgorithmName` pair. Only the Train and selection sample rows are read, so
+extra samples such as OOT never influence the choice. Every model goes through these steps:
+
+| Step | Rule (default) | Result |
+|---|---|---|
+| Data | Exactly one row per sample and finite metrics. | Fail: eliminated. Duplicate rows and missing metrics are reported. |
+| Baseline | Beat the baseline model of the same Label on the selection sample. Regression: WMAPE lower by `MinImprovementOverBaseline` (10%) and R2 higher. Binary: LogLoss lower by 10% and Gini higher. | Fail: eliminated. NA: the Label has no baseline. |
+| Bias (Regression) | Absolute Bias divided by mean absolute target is at most `MaxRelativeBias` (0.05). | Fail: eliminated. NA: not calculable (WMAPE is 0); the model stays eligible. |
+| Memorize | Train fit is not almost perfect: R2 below 0.999 (Regression) or AUC below 0.99 (Binary); change it with `MemorizationLimit`. | Fail: not a candidate. |
+| Overfit | Train minus selection sample, of R2 (Regression) or Gini (Binary), is at most `MaxFitGap` (0.15). | Fail: not a candidate. |
+
+**Choosing.** Candidates are the models that were not eliminated and pass both Memorize and Overfit.
+If there are none, the models passing Overfit are ranked with an alert (a near-perfect Train fit with
+a small Train-Test gap is usually just an easy problem; raise `MemorizationLimit` if that is true for
+your data). If there are still none, the models passing Memorize are ranked with an alert, and if
+there are none either, nothing is recommended.
+
+**Ranking.** Candidates are ranked by the average rank of the selection sample metrics (Regression:
+WMAPE, RMSE, MAE, R2; Binary: Gini, KS, LogLoss, Brier). Candidates whose primary metric (WMAPE or
+Gini) is within `TieTolerance` (1%) of the best one form the tie band: they share rank 1 and the one
+with the smallest Train-selection gap is `Recommended`. For example, with a best WMAPE of 0.2000,
+every candidate up to 0.2020 is tied.
+
+**Reading the result.** The table lists ranked models first, then eliminated models, then baselines.
+
+| Column | Meaning |
+|---|---|
+| `Data`, `Baseline`, `Bias`, `Memorize`, `Overfit` | `Pass`, `Fail` or `NA` (not evaluated) for each step. |
+| `FitGap` | Train minus selection sample (R2 or Gini). Large values mean overfitting. |
+| `RelativeBias` | Regression only: absolute Bias divided by the mean absolute target. |
+| `AvgRank`, `TieBand` | Average metric rank, and `Yes` if the model is inside the tie band. |
+| `Result` | Rank number, `Eliminated` or `Baseline`. Tied models share rank 1. |
+| `Recommended` | `True` for exactly one model, or for none if nothing survived. |
+
+If nothing is recommended, read the printed alerts and the step columns: they show which rule removed
+each model. Then relax the matching threshold deliberately instead of choosing a model by hand.
+
+### BootstrapCompare: are the top models really different?
+
+The Test sample is a random draw, so a small difference between two models can be luck. The paired
+bootstrap resamples the rows with replacement many times and scores all models on the same resampled
+rows. The spread of the metric difference to the `Reference` shows how much of it is noise. It is a
+data-driven alternative to `TieTolerance`.
+
+- **Input:** one row per sample row with the target and one prediction column per candidate
+  (Regression: the predicted value; Binary: the probability of class 1). `CalculateModelPredictions`
+  produces these columns: `RidgeR` for regression, `LogisticCProbability` for binary. Column names must be
+  distinct; use its `Rename` argument, or build the table per Label, when the same algorithm appears
+  under several Labels. `Candidates` maps each column to `(Label, AlgorithmName)` for the report.
+- **Use it on the selection sample only**, with the models ranked best by `SelectBestModel`.
+- **Reference:** `None` uses the best candidate on all rows.
+
+| Column | Meaning |
+|---|---|
+| metric (`WMAPE`, `Gini`, ...) | The metric on all rows. |
+| `Delta` | Mean improvement over the Reference across the resamples; positive is better. |
+| `CILow`, `CIHigh` | Interval of the improvement (`ConfidenceLevel`, default 90%). |
+| `ProbBetter` | Share of resamples in which the candidate beats the Reference. |
+| `Verdict` | `Reference`; `Tied` if the interval contains 0; otherwise `Better` or `Worse`. |
+
+A `Tied` candidate cannot be told apart from the Reference on these rows. Prefer the simpler, faster
+or more stable one, and do not read the ranking order as a real difference.
+
+Limits: the bootstrap captures the sampling noise of these rows, not the variation you would get from
+retraining; it assumes independent rows (not suitable as is for grouped or time-correlated rows); the
+intervals are not adjusted for comparing many candidates, and the Reference is chosen on the same
+rows. The run time grows with rows x candidates x resamples; a progress message is printed, and
+larger jobs report every quarter.
+
+### EvaluateOnHoldout: the final check
+
+A holdout sample (for example OOT) was kept out of the whole selection. Run `EvaluateOnHoldout` once for
+the recommended model. It compares the selection sample with the holdout sample, both taken from the
+`Performance` table, and returns one row:
+
+| Value | Meaning |
+|---|---|
+| `Decay` | Relative worsening of the primary metric (WMAPE increase or Gini decrease) from the selection sample to the holdout. Negative means the model improved. Limit: `MaxDecay` (0.30). |
+| `RelativeBias` | Regression only: absolute Bias divided by the mean absolute target on the holdout. Limit: `MaxRelativeBias` (0.05). |
+| `Pass` | `True` when every calculable check is within its limit. |
+
+A check with a zero denominator is `NaN` and skipped with an alert. `Pass` is `False` when metrics are
+missing, or when no check could be calculated. The function does not compare the model with a baseline
+on the holdout; add the baseline's holdout row to `Performance` and compare it yourself if you need that.
+If `Pass` is `False`, investigate (drift, data problems) instead of switching to another model.
 
 ## Creating an outlier plan
 
@@ -1463,6 +1602,117 @@ Tuple of (ModelArtifacts, Performance, Log, TrainData).
 - `Log`: Errors, warnings and info with columns Label, AlgorithmName, SampleName, Stage, Severity, Message, SystemDate.
 
 - `TrainData`: Exact rows (original index, Features + Target) the models were fitted on, so the run can be reproduced regardless of the incoming row order.
+
+</details>
+
+### model_selection
+
+See [Choosing the best model](#choosing-the-best-model) for when to use each function and how to read the results.
+
+| Function | Goal | Example |
+|---|---|---|
+| `SelectBestModel` | Choose the best model from a Performance table and show how every model was eliminated or ranked. | `Ranking = koco.SelectBestModel(Performance)` |
+| `BootstrapCompare` | Test with a paired bootstrap whether candidate models really differ on the same rows. | `koco.BootstrapCompare(Predictions, Target, {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}, "Regression")` |
+| `EvaluateOnHoldout` | Check one chosen model on a holdout sample (e.g. OOT) after the selection is finished. | `koco.EvaluateOnHoldout(Performance, "Run1", "RidgeR")` |
+
+<details>
+<summary>SelectBestModel: parameters and return value</summary>
+
+```text
+SelectBestModel(
+    Performance: pd.DataFrame,
+    SelectionSample: str = "Test",
+    TrainSample: str = "Train",
+    BaselineAlgorithm: str | None = None,
+    MinImprovementOverBaseline: float = 0.10,
+    MaxRelativeBias: float = 0.05,
+    MaxFitGap: float = 0.15,
+    MemorizationLimit: float | None = None,
+    TieTolerance: float = 0.01,
+) -> pd.DataFrame
+```
+
+**Parameters**
+
+- `Performance`: Table from RegressionModelling / ClassificationModelling, optionally with extra sample rows; it is not modified.
+- `SelectionSample`: Sample used for the choice. It must differ from TrainSample.
+- `TrainSample`: Sample the models were fitted on.
+- `BaselineAlgorithm`: Registry key of the baseline model. None uses DummyR (Regression) or DummyC (Binary).
+- `MinImprovementOverBaseline`: Required relative gain over the baseline, in [0, 1).
+- `MaxRelativeBias`: Largest allowed |Bias| / mean|y| (Regression only).
+- `MaxFitGap`: Largest allowed Train - SelectionSample difference of R2 (Regression) or Gini (Binary).
+- `MemorizationLimit`: Train R2 (Regression) or AUC (Binary) from which a model counts as memorising. None uses 0.999 (Regression) or 0.99 (Binary).
+- `TieTolerance`: Relative distance from the best primary metric (WMAPE or Gini) inside which models are tied.
+
+**Returns**
+
+DataFrame with ranked models first, then eliminated models, then baselines. Columns: Label, AlgorithmName, one column per step (Data, Baseline, Bias for Regression, Memorize, Overfit: "Pass", "Fail" or "NA"), FitGap, RelativeBias (Regression only), the primary metric on both samples, AvgRank, TieBand, Result ("Eliminated", "Baseline" or the rank) and Recommended (True for one model).
+
+</details>
+
+<details>
+<summary>BootstrapCompare: parameters and return value</summary>
+
+```text
+BootstrapCompare(
+    Predictions: pd.DataFrame,
+    Target: str,
+    Candidates: dict[str, tuple[str, str]],
+    ModelType: str,
+    Metric: str | None = None,
+    Reference: str | None = None,
+    Resamples: int = 1000,
+    ConfidenceLevel: float = 0.90,
+    RandomState: int = 1234,
+) -> pd.DataFrame
+```
+
+**Parameters**
+
+- `Predictions`: One row per sample row with the Target column and one prediction column per candidate (Regression: predicted value; Binary: probability of class 1); it is not modified.
+- `Target`: Name of the Target column in Predictions.
+- `Candidates`: Candidate column name -> (Label, AlgorithmName) with at least two entries, e.g. {"RidgeR": ("Run1", "RidgeR"), "RandFR": ("Run1", "RandFR")}.
+- `ModelType`: "Regression" or "Binary".
+- `Metric`: Regression: WMAPE (default), RMSE, MAE. Binary: Gini (default), AUC, LogLoss.
+- `Reference`: Candidate key to compare against; None uses the best candidate on all rows.
+- `Resamples`: Number of bootstrap samples, at least 100.
+- `ConfidenceLevel`: Width of the interval, between 0 and 1 (exclusive).
+- `RandomState`: Seed of the resampling.
+
+**Returns**
+
+DataFrame, best metric first, with Candidate, Label, AlgorithmName, the metric on all rows, Delta (mean improvement over the Reference; positive is better), CILow, CIHigh, ProbBetter (share of resamples where the candidate beats the Reference) and Verdict ("Reference", "Tied", "Better" or "Worse").
+
+</details>
+
+<details>
+<summary>EvaluateOnHoldout: parameters and return value</summary>
+
+```text
+EvaluateOnHoldout(
+    Performance: pd.DataFrame,
+    Label: str,
+    AlgorithmName: str,
+    SelectionSample: str = "Test",
+    HoldoutSample: str = "OOT",
+    MaxDecay: float = 0.30,
+    MaxRelativeBias: float = 0.05,
+) -> pd.Series
+```
+
+**Parameters**
+
+- `Performance`: Table with the SelectionSample and HoldoutSample rows; it is not modified.
+- `Label`: Label of the model.
+- `AlgorithmName`: Algorithm key of the model.
+- `SelectionSample`: Sample the model was chosen on.
+- `HoldoutSample`: Sample that was kept out of the selection.
+- `MaxDecay`: Largest allowed relative worsening of the primary metric (WMAPE increase or Gini decrease) from SelectionSample to HoldoutSample.
+- `MaxRelativeBias`: Largest allowed |Bias| / mean|y| on the HoldoutSample (Regression only).
+
+**Returns**
+
+Series with Label, AlgorithmName, the primary metric on both samples, Decay, RelativeBias (Regression only) and Pass. A check with a zero denominator is NaN and skipped with an alert; Pass is False when metrics are missing or no check could be calculated.
 
 </details>
 
