@@ -1,1 +1,4 @@
 include tests/_samples.py
+exclude .github/copilot-instructions.md
+exclude koco/new_functions.py
+exclude RELEASE_LOCAL.md
