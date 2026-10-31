@@ -64,7 +64,7 @@ Her ek paket yalnızca ona ihtiyaç duyan özellikler tarafından import edilir.
 | `parquet` | pyarrow | `ExportParquet`, `ImportParquet` |
 | `stats` | statsmodels | `VIFReport`, `BackwardSelection` |
 | `boosting` | xgboost, lightgbm, catboost | `XGB*`, `LGBM*`, `CatBoost*` algoritma anahtarları (algorithm key) |
-| `dev` | pytest | test paketi |
+| `dev` | pytest, ruff | test paketi ve kod denetleyicisi (linter) |
 | `all` | sql + parquet + stats + boosting | `dev` hariç her şey |
 
 `Connection` ayrıca *ODBC Driver 17 for SQL Server* gerektirir. Bağlantı ayarları
@@ -183,10 +183,13 @@ Geliştirme, test bağımlılıklarıyla (dependency) birlikte düzenlenebilir k
 ```bash
 python -m pip install -e ".[dev,all]"
 python -m pytest
+python -m ruff check .
 ```
 
 Test paketi ayrıca her null stratejisinin (strategy), ölçekleme (scaling) yönteminin (method), algoritma anahtarının (algorithm key) ve metriğin (metric)
-rehberlerde bir karşılığı olduğunu da kontrol eder.
+rehberlerde bir karşılığı olduğunu da kontrol eder. ruff yalnızca gerçek hataları (sözdizimi, tanımsız veya kullanılmayan isimler) denetler;
+kuralları `pyproject.toml` içindedir. GitHub Actions, `main` dalına her push'ta ve her pull request'te ikisini de Python 3.10–3.13 ile çalıştırır.
+Değişiklikler [CHANGELOG.md](https://github.com/ffarukkoc/koco-ml/blob/main/CHANGELOG.md) dosyasında listelenir.
 
 ### Proje yapısı
 
@@ -194,8 +197,10 @@ rehberlerde bir karşılığı olduğunu da kontrol eder.
 koco/                        <- proje kökü
 ├── pyproject.toml           <- paket meta verisi (package metadata) ve bağımlılıklar (dependency)
 ├── README.md
+├── CHANGELOG.md             <- sürüm geçmişi
 ├── GUIDE.md                 <- iş akışı (workflow) ve fonksiyon referansı (function reference)
 ├── tests/                   <- pytest paketi
+├── .github/workflows/       <- GitHub Actions (ruff + testler)
 └── koco/                    <- paket
     ├── __init__.py          <- sürüm; her modülün public isimlerini yeniden dışa aktarır
     ├── _helpers.py          <- modüller arasında paylaşılan private yardımcılar

@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from datetime import date
 
 import joblib
+import numpy as np
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
@@ -48,12 +49,15 @@ def test_import_excel_round_trip(tmp_path):
     First = pd.DataFrame({"a": [1, 2, 3], "b": ["x", "y", None], "c": [0.5, 1.5, 2.5]})
     Second = pd.DataFrame({"d": [10, 20]})
     Path = koco.ExportExcel({"One": First, "Two": Second}, tmp_path / "book.xlsx")
-    pd.testing.assert_frame_equal(koco.ImportExcel(Path), First)
+    # An empty Excel cell is read back as NaN, not None.
+    Expected = First.copy()
+    Expected.loc[2, "b"] = np.nan
+    pd.testing.assert_frame_equal(koco.ImportExcel(Path), Expected)
     pd.testing.assert_frame_equal(koco.ImportExcel(Path, "Two"), Second)
     pd.testing.assert_frame_equal(koco.ImportExcel(Path, SheetName=1), Second)
     Everything = koco.ImportExcel(Path, SheetName=None)
     assert list(Everything) == ["One", "Two"]
-    pd.testing.assert_frame_equal(Everything["One"], First)
+    pd.testing.assert_frame_equal(Everything["One"], Expected)
 
 def test_import_excel_errors(tmp_path):
     with pytest.raises(FileNotFoundError, match="not found"):

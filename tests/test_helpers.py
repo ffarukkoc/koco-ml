@@ -68,7 +68,10 @@ def test_output_path_reports_existing_files(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 def test_message_symbols(capsys):
-    _Alert("a"); _Info("b"); _Done("c"); _Step("d")
+    _Alert("a")
+    _Info("b")
+    _Done("c")
+    _Step("d")
     assert capsys.readouterr().out.splitlines() == ["❗ a", "ℹ b", "✓ c", "• d"]
 
 def test_validate_target_and_features_defaults_to_all_other_columns():

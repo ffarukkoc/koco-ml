@@ -1,7 +1,6 @@
 # Local-only development files
 /.github/copilot-instructions.md
-/koco/new_functions.py
-/RELEASE_LOCAL.md
+/LocalFolder/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

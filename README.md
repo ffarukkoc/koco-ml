@@ -65,7 +65,7 @@ Each extra is imported only by the features that need it.
 | `parquet` | pyarrow | `ExportParquet`, `ImportParquet` |
 | `stats` | statsmodels | `VIFReport`, `BackwardSelection` |
 | `boosting` | xgboost, lightgbm, catboost | `XGB*`, `LGBM*`, `CatBoost*` algorithm keys |
-| `dev` | pytest | the test suite |
+| `dev` | pytest, ruff | the test suite and the linter |
 | `all` | sql + parquet + stats + boosting | everything except `dev` |
 
 `Connection` also needs the *ODBC Driver 17 for SQL Server*. Connection settings are described in
@@ -187,10 +187,13 @@ Development uses an editable install with the test dependencies:
 ```bash
 python -m pip install -e ".[dev,all]"
 python -m pytest
+python -m ruff check .
 ```
 
 The test suite also checks that every null strategy, scaling method, algorithm key and metric has
-an entry in the guides.
+an entry in the guides. ruff only checks for real errors (syntax, undefined or unused names); its
+rules are set in `pyproject.toml`. GitHub Actions runs both on Python 3.10 to 3.13 for every push to
+`main` and every pull request. Changes are listed in [CHANGELOG.md](https://github.com/ffarukkoc/koco-ml/blob/main/CHANGELOG.md).
 
 ### Project layout
 
@@ -198,8 +201,10 @@ an entry in the guides.
 koco/                        <- project root
 ├── pyproject.toml           <- package metadata and dependencies
 ├── README.md
+├── CHANGELOG.md             <- version history
 ├── GUIDE.md                 <- workflow and function reference
 ├── tests/                   <- pytest suite
+├── .github/workflows/       <- GitHub Actions (ruff + tests)
 └── koco/                    <- the package
     ├── __init__.py          <- version; re-exports the public names of every module
     ├── _helpers.py          <- private helpers shared by the modules

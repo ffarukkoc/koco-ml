@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from ._helpers import DEFAULT_RANDOM_STATE, _Alert, _CheckColumns, _Done, _Step
+from ._helpers import DEFAULT_RANDOM_STATE, _Alert, _CheckColumns, _Done, _Info, _Step
 from .modelling import _SEPARATED_TRAIN_AUC
 
 __all__ = ["SelectBestModel", "EvaluateOnHoldout", "BootstrapCompare"]

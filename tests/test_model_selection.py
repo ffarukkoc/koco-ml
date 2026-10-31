@@ -225,11 +225,15 @@ def test_bootstrap_compare_regression_verdicts():
     assert dict(zip(Reference["Candidate"], Reference["Verdict"]))["Good"] == "Better"
     assert (Result["CILow"] <= Result["CIHigh"]).all()
 
-def test_bootstrap_compare_is_reproducible_and_reports_progress(capsys):
+def test_bootstrap_compare_is_reproducible_and_reports_progress(capsys, monkeypatch):
     Predictions = RegressionPredictions()
     First = koco.BootstrapCompare(Predictions, "y", CANDIDATES, "Regression", Resamples=100, RandomState=7)
     assert "Bootstrap" in capsys.readouterr().out
     pd.testing.assert_frame_equal(First, koco.BootstrapCompare(Predictions, "y", CANDIDATES, "Regression", Resamples=100, RandomState=7))
+    monkeypatch.setattr(koco.model_selection, "_PROGRESS_WORK", 1)
+    capsys.readouterr()
+    pd.testing.assert_frame_equal(First, koco.BootstrapCompare(Predictions, "y", CANDIDATES, "Regression", Resamples=100, RandomState=7))
+    assert "Resampled 25 / 100" in capsys.readouterr().out
 
 def test_bootstrap_compare_binary_metrics():
     Predictions = BinaryPredictions()
